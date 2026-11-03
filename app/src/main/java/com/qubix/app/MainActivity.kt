@@ -4,17 +4,27 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.Query
+
+data class ChatMessage(
+    val senderId: String = "",
+    val senderEmail: String = "",
+    val message: String = "",
+    val timestamp: Long = 0L
+)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
         setContent {
             MaterialTheme {
                 QubixApp()
@@ -26,52 +36,199 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun QubixApp() {
     val auth = remember { FirebaseAuth.getInstance() }
+
     var loggedIn by remember {
         mutableStateOf(auth.currentUser != null)
     }
 
-    var selectedPage by remember { mutableStateOf("Chat") }
+    var selectedPage by remember {
+        mutableStateOf("Chats")
+    }
 
     if (!loggedIn) {
         AuthScreen(
             onLogin = { email, password ->
                 auth.signInWithEmailAndPassword(email, password)
-                    .addOnSuccessListener { loggedIn = true }
+                    .addOnSuccessListener {
+                        loggedIn = true
+                    }
             },
             onSignup = { email, password ->
                 auth.createUserWithEmailAndPassword(email, password)
-                    .addOnSuccessListener { loggedIn = true }
+                    .addOnSuccessListener {
+                        loggedIn = true
+                    }
             }
         )
     } else {
-        Column(modifier = Modifier.fillMaxSize()) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly
-            ) {
-                TextButton(onClick = { selectedPage = "Chat" }) {
-                    Text("Chats")
+        Scaffold(
+            bottomBar = {
+                NavigationBar {
+                    val pages = listOf(
+                        "Chats",
+                        "Groups",
+                        "Calls",
+                        "Notifications",
+                        "Profile"
+                    )
+
+                    pages.forEach { page ->
+                        NavigationBarItem(
+                            selected = selectedPage == page,
+                            onClick = { selectedPage = page },
+                            icon = { Text(
+                                when (page) {
+                                    "Chats" -> "💬"
+                                    "Groups" -> "👥"
+                                    "Calls" -> "📞"
+                                    "Notifications" -> "🔔"
+                                    else -> "👤"
+                                }
+                            ) },
+                            label = { Text(page) }
+                        )
+                    }
                 }
-                TextButton(onClick = { selectedPage = "Profile" }) {
-                    Text("Profile")
+            }
+        ) { padding ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+            ) {
+                when (selectedPage) {
+                    "Chats" -> ChatScreen {
+                        auth.signOut()
+                        loggedIn = false
+                    }
+
+                    "Groups" -> GroupChatScreen()
+
+                    "Calls" -> CallScreen()
+
+                    "Notifications" -> NotificationScreen()
+
+                    "Profile" -> ProfileScreen {
+                        auth.signOut()
+                        loggedIn = false
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ChatScreen(onLogout: () -> Unit) {
+    val auth = remember { FirebaseAuth.getInstance() }
+    val db = remember { FirebaseFirestore.getInstance() }
+    val user = auth.currentUser
+
+    var message by remember { mutableStateOf("") }
+    var messages by remember { mutableStateOf(listOf<ChatMessage>()) }
+    var status by remember { mutableStateOf("") }
+
+    DisposableEffect(Unit) {
+        val registration = db.collection("chats")
+            .document("public")
+            .collection("messages")
+            .orderBy("timestamp", Query.Direction.ASCENDING)
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    status = error.localizedMessage ?: "Loading failed"
+                } else {
+                    messages = snapshot?.documents?.mapNotNull {
+                        it.toObject(ChatMessage::class.java)
+                    } ?: emptyList()
                 }
             }
 
-            HorizontalDivider()
+        onDispose {
+            registration.remove()
+        }
+    }
 
-            when (selectedPage) {
-                "Chat" -> ChatScreen(
-                    onLogout = {
-                        auth.signOut()
-                        loggedIn = false
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(12.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                "QUBIX Chats",
+                style = MaterialTheme.typography.headlineMedium
+            )
+
+            TextButton(onClick = onLogout) {
+                Text("Logout")
+            }
+        }
+
+        Text(user?.email ?: "")
+        Text(status, color = MaterialTheme.colorScheme.error)
+
+        HorizontalDivider()
+
+        LazyColumn(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+        ) {
+            items(messages) { item ->
+                Column(
+                    modifier = Modifier.padding(10.dp)
+                ) {
+                    Text(
+                        item.senderEmail,
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                    Text(item.message)
+                }
+                HorizontalDivider()
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            OutlinedTextField(
+                value = message,
+                onValueChange = { message = it },
+                modifier = Modifier.weight(1f),
+                placeholder = { Text("Write a message...") }
+            )
+
+            Button(
+                onClick = {
+                    val text = message.trim()
+
+                    if (user != null && text.isNotEmpty()) {
+                        val data = ChatMessage(
+                            senderId = user.uid,
+                            senderEmail = user.email ?: "User",
+                            message = text,
+                            timestamp = System.currentTimeMillis()
+                        )
+
+                        db.collection("chats")
+                            .document("public")
+                            .collection("messages")
+                            .add(data)
+                            .addOnSuccessListener {
+                                message = ""
+                                status = ""
+                            }
+                            .addOnFailureListener {
+                                status = it.localizedMessage ?: "Send failed"
+                            }
                     }
-                )
-                "Profile" -> ProfileScreen(
-                    onLogout = {
-                        auth.signOut()
-                        loggedIn = false
-                    }
-                )
+                },
+                enabled = message.isNotBlank()
+            ) {
+                Text("Send")
             }
         }
     }
@@ -85,20 +242,19 @@ fun ProfileScreen(onLogout: () -> Unit) {
 
     var name by remember { mutableStateOf("") }
     var bio by remember { mutableStateOf("") }
-    var status by remember { mutableStateOf("Loading profile...") }
+    var status by remember { mutableStateOf("") }
 
     LaunchedEffect(user?.uid) {
         if (user != null) {
             db.collection("users")
                 .document(user.uid)
                 .get()
-                .addOnSuccessListener { document ->
-                    name = document.getString("name") ?: ""
-                    bio = document.getString("bio") ?: ""
-                    status = ""
+                .addOnSuccessListener {
+                    name = it.getString("name") ?: ""
+                    bio = it.getString("bio") ?: ""
                 }
                 .addOnFailureListener {
-                    status = it.localizedMessage ?: "Could not load profile"
+                    status = it.localizedMessage ?: "Load failed"
                 }
         }
     }
@@ -106,23 +262,21 @@ fun ProfileScreen(onLogout: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+            .padding(20.dp)
     ) {
-        Text("QUBIX PROFILE", style = MaterialTheme.typography.headlineMedium)
+        Text(
+            "QUBIX Profile",
+            style = MaterialTheme.typography.headlineMedium
+        )
 
         Spacer(modifier = Modifier.height(20.dp))
 
-        Text(user?.email ?: "No email")
-
-        Spacer(modifier = Modifier.height(20.dp))
+        Text(user?.email ?: "")
 
         OutlinedTextField(
             value = name,
             onValueChange = { name = it },
-            label = { Text("Your Name") },
-            singleLine = true
+            label = { Text("Your Name") }
         )
 
         Spacer(modifier = Modifier.height(12.dp))
@@ -130,8 +284,7 @@ fun ProfileScreen(onLogout: () -> Unit) {
         OutlinedTextField(
             value = bio,
             onValueChange = { bio = it },
-            label = { Text("About You") },
-            minLines = 3
+            label = { Text("About You") }
         )
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -148,7 +301,7 @@ fun ProfileScreen(onLogout: () -> Unit) {
                     .document(user.uid)
                     .set(profile)
                     .addOnSuccessListener {
-                        status = "Profile saved successfully!"
+                        status = "Profile saved!"
                     }
                     .addOnFailureListener {
                         status = it.localizedMessage ?: "Save failed"
@@ -157,8 +310,6 @@ fun ProfileScreen(onLogout: () -> Unit) {
         }) {
             Text("Save Profile")
         }
-
-        Spacer(modifier = Modifier.height(12.dp))
 
         Text(status)
 
