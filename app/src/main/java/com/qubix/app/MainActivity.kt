@@ -1,12 +1,9 @@
-
 package com.qubix.app
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -14,14 +11,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.Query
-
-data class ChatMessage(
-    val senderId: String = "",
-    val senderEmail: String = "",
-    val message: String = "",
-    val timestamp: Long = 0L
-)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -37,14 +26,13 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun QubixApp() {
     val auth = remember { FirebaseAuth.getInstance() }
-    var loggedIn by remember { mutableStateOf(auth.currentUser != null) }
+    var loggedIn by remember {
+        mutableStateOf(auth.currentUser != null)
+    }
 
-    if (loggedIn) {
-        ChatScreen(onLogout = {
-            auth.signOut()
-            loggedIn = false
-        })
-    } else {
+    var selectedPage by remember { mutableStateOf("Chat") }
+
+    if (!loggedIn) {
         AuthScreen(
             onLogin = { email, password ->
                 auth.signInWithEmailAndPassword(email, password)
@@ -55,117 +43,129 @@ fun QubixApp() {
                     .addOnSuccessListener { loggedIn = true }
             }
         )
+    } else {
+        Column(modifier = Modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                TextButton(onClick = { selectedPage = "Chat" }) {
+                    Text("Chats")
+                }
+                TextButton(onClick = { selectedPage = "Profile" }) {
+                    Text("Profile")
+                }
+            }
+
+            HorizontalDivider()
+
+            when (selectedPage) {
+                "Chat" -> ChatScreen(
+                    onLogout = {
+                        auth.signOut()
+                        loggedIn = false
+                    }
+                )
+                "Profile" -> ProfileScreen(
+                    onLogout = {
+                        auth.signOut()
+                        loggedIn = false
+                    }
+                )
+            }
+        }
     }
 }
 
 @Composable
-fun ChatScreen(onLogout: () -> Unit) {
+fun ProfileScreen(onLogout: () -> Unit) {
     val auth = remember { FirebaseAuth.getInstance() }
     val db = remember { FirebaseFirestore.getInstance() }
     val user = auth.currentUser
 
-    var message by remember { mutableStateOf("") }
-    var messages by remember { mutableStateOf(listOf<ChatMessage>()) }
-    var status by remember { mutableStateOf("") }
+    var name by remember { mutableStateOf("") }
+    var bio by remember { mutableStateOf("") }
+    var status by remember { mutableStateOf("Loading profile...") }
 
-    DisposableEffect(Unit) {
-        val registration = db.collection("chats")
-            .document("public")
-            .collection("messages")
-            .orderBy("timestamp", Query.Direction.ASCENDING)
-            .addSnapshotListener { snapshot, error ->
-                if (error != null) {
-                    status = error.localizedMessage ?: "Could not load messages"
-                } else {
-                    messages = snapshot?.documents?.mapNotNull {
-                        it.toObject(ChatMessage::class.java)
-                    } ?: emptyList()
+    LaunchedEffect(user?.uid) {
+        if (user != null) {
+            db.collection("users")
+                .document(user.uid)
+                .get()
+                .addOnSuccessListener { document ->
+                    name = document.getString("name") ?: ""
+                    bio = document.getString("bio") ?: ""
+                    status = ""
                 }
-            }
-
-        onDispose { registration.remove() }
+                .addOnFailureListener {
+                    status = it.localizedMessage ?: "Could not load profile"
+                }
+        }
     }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp)
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("QUBIX Chat", style = MaterialTheme.typography.headlineMedium)
-            TextButton(onClick = onLogout) {
-                Text("Logout")
-            }
-        }
+        Text("QUBIX PROFILE", style = MaterialTheme.typography.headlineMedium)
 
-        Text(user?.email ?: "", style = MaterialTheme.typography.bodySmall)
-        Text(status, color = MaterialTheme.colorScheme.error)
+        Spacer(modifier = Modifier.height(20.dp))
 
-        HorizontalDivider()
+        Text(user?.email ?: "No email")
 
-        LazyColumn(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth(),
-            reverseLayout = false
-        ) {
-            items(messages) { item ->
-                Column(modifier = Modifier.padding(vertical = 8.dp)) {
-                    Text(
-                        item.senderEmail,
-                        style = MaterialTheme.typography.labelSmall
-                    )
-                    Text(item.message)
-                }
-                HorizontalDivider()
-            }
-        }
+        Spacer(modifier = Modifier.height(20.dp))
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            OutlinedTextField(
-                value = message,
-                onValueChange = { message = it },
-                modifier = Modifier.weight(1f),
-                placeholder = { Text("Write a message...") }
-            )
+        OutlinedTextField(
+            value = name,
+            onValueChange = { name = it },
+            label = { Text("Your Name") },
+            singleLine = true
+        )
 
-            Spacer(modifier = Modifier.width(8.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
-            Button(
-                onClick = {
-                    val text = message.trim()
-                    if (text.isNotEmpty() && user != null) {
-                        val data = ChatMessage(
-                            senderId = user.uid,
-                            senderEmail = user.email ?: "User",
-                            message = text,
-                            timestamp = System.currentTimeMillis()
-                        )
+        OutlinedTextField(
+            value = bio,
+            onValueChange = { bio = it },
+            label = { Text("About You") },
+            minLines = 3
+        )
 
-                        db.collection("chats")
-                            .document("public")
-                            .collection("messages")
-                            .add(data)
-                            .addOnSuccessListener {
-                                message = ""
-                                status = ""
-                            }
-                            .addOnFailureListener {
-                                status = it.localizedMessage ?: "Send failed"
-                            }
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Button(onClick = {
+            if (user != null) {
+                val profile = hashMapOf(
+                    "name" to name.trim(),
+                    "bio" to bio.trim(),
+                    "email" to (user.email ?: "")
+                )
+
+                db.collection("users")
+                    .document(user.uid)
+                    .set(profile)
+                    .addOnSuccessListener {
+                        status = "Profile saved successfully!"
                     }
-                },
-                enabled = message.isNotBlank()
-            ) {
-                Text("Send")
+                    .addOnFailureListener {
+                        status = it.localizedMessage ?: "Save failed"
+                    }
             }
+        }) {
+            Text("Save Profile")
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Text(status)
+
+        Spacer(modifier = Modifier.height(20.dp))
+
+        OutlinedButton(onClick = onLogout) {
+            Text("Logout")
         }
     }
 }
